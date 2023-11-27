@@ -22,6 +22,10 @@ profit_balance = input.bool(true, "Trade with net profits included in equity", g
 sumcapital = profit_balance ? strategy.initial_capital + strategy.netprofit : strategy.initial_capital
 long_entry_size = math.round(sumcapital / close, exchange_decimal)
 
+start_time = input.time(timestamp("2000-01-01T17:00:00+09:00"), title="자동매매 시작")
+end_time = input.time(timestamp("2030-12-31T09:00:00+09:00"), title="자동매매 종료")
+in_trade = POA.in_trade(start_time, end_time)
+
 // ==========================================================================
 // HEIKIN_ASHI
 ha_open = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open)
@@ -73,7 +77,7 @@ plot(mad, title='ARA', color=color.new(color.orange, 20), style=plot.style_line,
 // 손절 비율
 float cut_ratio = input.float(6, title='cut %', step=0.1)
 bool long_cond = ha_open_long_cond and mfi_long_cond and arma_long_condt and strategy.opentrades.size(strategy.opentrades - 1) == 0
-if long_cond
+if (in_trade and long_cond)
     //log.info('open:{0}, close:{1}, ha_open:{2}, ha_close:{3}', open, close, ha_open, ha_close)    
     cut_price = close * (1 - cut_ratio/100)
     strategy.entry(id = "Long", direction = strategy.long, qty = long_entry_size, alert_message = POA.entry_message(password))
@@ -89,7 +93,7 @@ if long_cond
 float recent_entry_price = strategy.opentrades.entry_price(strategy.opentrades-1)
 bool profit_cond = close > recent_entry_price   // 수익 중인지?
 bool close_long_cond = ha_close_long_cond and profit_cond and mfi_close_cond and strategy.opentrades.size(strategy.opentrades - 1) > 0
-if close_long_cond
+if (in_trade and close_long_cond)
     strategy.close(id = 'Long', comment = 'Close Long', immediately = true, alert_message = POA.close_message(password))
 
 
