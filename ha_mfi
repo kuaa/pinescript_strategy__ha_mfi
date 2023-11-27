@@ -1,0 +1,264 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © kuaa3096
+import dokang/POA/9 as POA
+//@version=5
+//@strategy_alert_message {{strategy.order.alert_message}}
+strategy("하이킨아시_MFI"
+     , overlay = true
+     //, process_orders_on_close = true
+     , initial_capital = 10000
+     , default_qty_type = strategy.percent_of_equity
+     , default_qty_value = 100
+     , slippage = 1
+     , process_orders_on_close = true
+     , commission_value = 0.05
+     , pyramiding = 1)
+
+// ==========================================================================
+// entry cond
+password = input.string(defval="password", title="Password ", group="entry cond")
+exchange_decimal = input.int(2, "Exchange Min Amount Decimal ", minval=0, step=1, group='entry cond')
+profit_balance = input.bool(true, "Trade with net profits included in equity", group='entry cond')
+sumcapital = profit_balance ? strategy.initial_capital + strategy.netprofit : strategy.initial_capital
+long_entry_size = math.round(sumcapital / close, exchange_decimal)
+
+// ==========================================================================
+// HEIKIN_ASHI
+ha_open = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open)
+ha_close = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+ha_high = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, high)
+ha_low = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, low)
+
+// 아래 꼬리가 없고 양봉 마감이며 양봉으로 시작
+bool ha_open_long_cond = (ha_open == ha_low) and (ha_close > ha_open) and ((ha_close + ha_open) / 2 < close)
+
+// 음봉 마감이며 음봉으로 시작
+bool ha_close_long_cond = ha_open > ha_close and ((ha_open + ha_close) / 2) > close
+
+
+// ==========================================================================
+// MFI
+mfi_len = input.int(14, minval=1, title="MFI", group='mfi')
+mfi = ta.mfi(hlc3, mfi_len)
+//plot(mfi, color=color.yellow)
+
+int mif_open_long_val = input.int(70, title='mfi open long value', step=1, group='mfi', tooltip='mfi가 이 값 이상일 경우에만 진입합니다')
+bool mfi_long_cond = mfi >= mif_open_long_val
+
+bool enable_close_long_mfi_cond = input.bool(true, 'enable mfi long close cond', group='mfi', inline='mfi close cond')
+int close_long_mfi_val = input.int(50, 'mfi close long value', step=1, group='mfi', inline='mfi close cond', tooltip='mfi가 이 값 이하일 경우에만 종료합니다.') 
+bool mfi_close_cond = enable_close_long_mfi_cond ? mfi <= close_long_mfi_val : true
+
+// ==========================================================================
+// Autonomous Recursive Moving Average
+ara_length = input.int(13, title='Length ', group='Autonomous Recursive Moving Average', inline='ara2')
+gamma = input.float(3.0, title='Gamma ', step=0.1, group='Autonomous Recursive Moving Average', inline='ara2')
+
+ma = 0.
+mad = 0.
+
+src_ = close
+ma := nz(mad[1], src_)
+d = ta.cum(math.abs(src_[ara_length] - ma)) / bar_index * gamma
+mad := ta.sma(ta.sma(src_ > nz(mad[1], src_) + d ? src_ + d : src_ < nz(mad[1], src_) - d ? src_ - d : nz(mad[1], src_), ara_length), ara_length)
+
+arma_long_condt = close > mad
+plot(mad, title='ARA', color=color.new(color.orange, 20), style=plot.style_line, linewidth=2)
+
+
+
+
+// ==========================================================================
+// ENTRY LOGIC - LONG
+// 손절 비율
+float cut_ratio = input.float(6, title='cut %', step=0.1)
+bool long_cond = ha_open_long_cond and mfi_long_cond and arma_long_condt and strategy.opentrades.size(strategy.opentrades - 1) == 0
+if long_cond
+    //log.info('open:{0}, close:{1}, ha_open:{2}, ha_close:{3}', open, close, ha_open, ha_close)    
+    cut_price = close * (1 - cut_ratio/100)
+    strategy.entry(id = "Long", direction = strategy.long, qty = long_entry_size, alert_message = POA.entry_message(password))
+    strategy.exit(id = 'Stop Loss', from_entry = 'Long', stop = cut_price, comment_loss = 'Long SL', alert_message = POA.exit_message(password))
+
+
+
+// ==========================================================================
+// CLOSE LOGIC - LONG
+// 시가 - (이전 바 시가 + 이전 바 종가)/2.
+// 종가 - (현재 바의 시가 + 고가 + 저가 + 종가)/4.
+// 가장 최근에 진입한 거래의 진입가
+float recent_entry_price = strategy.opentrades.entry_price(strategy.opentrades-1)
+bool profit_cond = close > recent_entry_price   // 수익 중인지?
+bool close_long_cond = ha_close_long_cond and profit_cond and mfi_close_cond and strategy.opentrades.size(strategy.opentrades - 1) > 0
+if close_long_cond
+    strategy.close(id = 'Long', comment = 'Close Long', immediately = true, alert_message = POA.close_message(password))
+
+
+
+
+
+
+// ==========================================================================
+// Table
+
+PnL = strategy.grossprofit - strategy.grossloss
+ex_PnL = math.round(strategy.openprofit, 1)
+
+totalbalance = strategy.initial_capital + strategy.netprofit
+
+used_equity = math.round(strategy.position_avg_price * strategy.position_size)
+ratio_equity = strategy.position_size > 0 ? math.round(used_equity / totalbalance * 100, 1) : 0
+
+maxTradeDrawDown() =>
+    maxDrawdown = 0.0
+    for tradeNo = 0 to strategy.opentrades - 1
+        maxDrawdown := math.max(maxDrawdown, strategy.opentrades.max_drawdown(tradeNo))
+
+mdd = ta.max(maxTradeDrawDown())
+
+totalTrades = strategy.closedtrades
+winningTrades = na(totalTrades) ? na : totalTrades - strategy.losstrades
+
+winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0
+
+profitFactor = math.abs(strategy.grossprofit) > 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+
+avgBarsPerTrade() =>
+    sumBarsPerTrade = 0
+    for tradeNo = 0 to strategy.closedtrades - 1
+        // Loop through all closed trades, starting with the oldest.
+        sumBarsPerTrade += strategy.closedtrades.exit_bar_index(tradeNo) - strategy.closedtrades.entry_bar_index(tradeNo) + 1
+    result = nz(sumBarsPerTrade / strategy.closedtrades)
+
+show_status           = input.bool(true,'', group='Status Table', inline='t1')
+status_text_size      = input.string(size.tiny, 'Size ', options=[size.tiny, size.small, size.normal], group='Status Table', inline='t1')
+status_table_position = input.string(position.bottom_left, 'Position ', options=[position.bottom_left, position.bottom_right, position.bottom_center, position.top_left, position.top_right, position.top_center], group='Status Table', inline='t1')
+
+show_performance           = input.bool(true, '', group='Profit Table', inline='t2')
+performance_text_size      = input.string(size.small, 'Size ', options=[size.tiny, size.small, size.normal], group='Profit Table', inline='t2')
+performance_table_position = input.string(position.bottom_right, 'Position ', options=[position.bottom_left, position.bottom_right, position.bottom_center, position.top_left, position.top_right, position.top_center], group='Profit Table', inline='t2')
+
+// ------------------------------------------------------------------------------------------------------------------ //
+
+profit_color1 = PnL > 0 ? color.lime : color.red
+profit_color2 = strategy.openprofit < 0 ? color.red : color.lime
+
+var Table = table.new(status_table_position, columns=10, rows=20, border_width=1, bgcolor=color.black, border_color=color.gray)
+
+if show_status
+    table.cell(table_id=Table, column=0, row=0, text='Position Size', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=0, row=1, text=str.tostring(strategy.position_size), text_size=status_text_size, text_color=color.green)
+    table.cell(table_id=Table, column=0, row=2, text='Avg Price', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=0, row=3, text=str.tostring(math.round_to_mintick(strategy.position_avg_price)), text_size=status_text_size, text_color=color.green)
+
+    table.cell(table_id=Table, column=1, row=0, text='Unrealized PnL', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=1, row=1, text=str.tostring(math.round(strategy.openprofit, 1)) + ' ' + syminfo.currency, text_size=status_text_size, text_color=profit_color2)
+    table.cell(table_id=Table, column=1, row=2, text_color=color.gray, text_size=status_text_size, text='Net profit')
+    table.cell(table_id=Table, column=1, row=3, text=str.tostring(math.round(PnL, 1)) + ' ' + syminfo.currency, text_size=status_text_size, text_color=profit_color1)
+
+    table.cell(table_id=Table, column=2, row=0, text='Win Rate', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=2, row=1, text=str.tostring(math.round(winRate, 1)), text_size=status_text_size, text_color=color.green)
+    table.cell(table_id=Table, column=2, row=2, text='Profit Factor', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=2, row=3, text=str.tostring(math.round(profitFactor, 2)), text_size=status_text_size, text_color=color.olive)
+
+    table.cell(table_id=Table, column=4, row=0, text='Max Drawdown', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=4, row=1, text=str.tostring(math.round(mdd, 1)), text_size=status_text_size, text_color=color.green)
+    table.cell(table_id=Table, column=4, row=2, text='Bars Per Trade', text_size=status_text_size, text_color=color.gray)
+    table.cell(table_id=Table, column=4, row=3, text=str.tostring(int(avgBarsPerTrade())), text_size=status_text_size, text_color=color.olive)
+
+if show_performance
+    new_month = month(time) != month(time[1])
+    new_year  = year(time)  != year(time[1])
+    
+    eq = strategy.initial_capital + strategy.netprofit
+    
+    bar_pnl = eq / eq[1] - 1
+    
+    cur_month_pnl = 0.0
+    cur_year_pnl  = 0.0
+    
+    // Current Monthly P&L
+    cur_month_pnl := new_month ? 0.0 : 
+                     (1 + cur_month_pnl[1]) * (1 + bar_pnl) - 1 
+    
+    // Current Yearly P&L
+    cur_year_pnl := new_year ? 0.0 : 
+                     (1 + cur_year_pnl[1]) * (1 + bar_pnl) - 1  
+    
+    // Arrays to store Yearly and Monthly P&Ls
+    var month_pnl  = array.new_float(0)
+    var month_time = array.new_int(0)
+    
+    var year_pnl  = array.new_float(0)
+    var year_time = array.new_int(0)
+    
+    last_computed = false
+    
+    if (not na(cur_month_pnl[1]) and (new_month or barstate.islastconfirmedhistory))
+        if (last_computed[1])
+            array.pop(month_pnl)
+            array.pop(month_time)
+            
+        array.push(month_pnl , cur_month_pnl[1])
+        array.push(month_time, time[1])
+    
+    if (not na(cur_year_pnl[1]) and (new_year or barstate.islastconfirmedhistory))
+        if (last_computed[1])
+            array.pop(year_pnl)
+            array.pop(year_time)
+            
+        array.push(year_pnl , cur_year_pnl[1])
+        array.push(year_time, time[1])
+    
+    last_computed := barstate.islastconfirmedhistory ? true : nz(last_computed[1])
+    
+    // Monthly P&L Table    
+    var monthly_table = table(na)
+    
+    if (barstate.islastconfirmedhistory)
+        monthly_table := table.new(performance_table_position, columns = 14, rows = array.size(year_pnl) + 1, border_width = 1)
+    
+        table.cell(monthly_table, 0,  0, "", text_size=performance_text_size,     bgcolor = color.gray)
+        table.cell(monthly_table, 1,  0, "Jan", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 2,  0, "Feb", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 3,  0, "Mar", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 4,  0, "Apr", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 5,  0, "May", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 6,  0, "Jun", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 7,  0, "Jul", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 8,  0, "Aug", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 9,  0, "Sep", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 10, 0, "Oct", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 11, 0, "Nov", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 12, 0, "Dec", text_size=performance_text_size,  bgcolor = color.gray)
+        table.cell(monthly_table, 13, 0, "Year", text_size=performance_text_size, bgcolor = color.gray)
+    
+    
+        for yi = 0 to array.size(year_pnl) - 1
+            table.cell(monthly_table, 0,  yi + 1, str.tostring(year(array.get(year_time, yi))), text_size=performance_text_size, bgcolor = color.gray)
+            
+            y_color = array.get(year_pnl, yi) > 0 ? color.new(color.teal, transp = 40) : color.new(color.red, transp = 40)
+            table.cell(monthly_table, 13, yi + 1, str.tostring(math.round(array.get(year_pnl, yi) * 100, 1)), bgcolor = y_color, text_size=performance_text_size, text_color=color.new(color.white, 0))
+            
+        for mi = 0 to array.size(month_time) - 1
+            m_row   = year(array.get(month_time, mi))  - year(array.get(year_time, 0)) + 1
+            m_col   = month(array.get(month_time, mi)) 
+            m_color = array.get(month_pnl, mi) > 0 ? color.new(color.teal, transp = 40) : color.new(color.red, transp = 40)
+            
+            table.cell(monthly_table, m_col, m_row, str.tostring(math.round(array.get(month_pnl, mi) * 100, 1)), bgcolor = m_color, text_size=performance_text_size, text_color=color.new(color.white, 0))
+
+// Number of the Long Win/Loss/Win-Rate, Short Win/Loss/Win-Rate
+var long_win = 0
+var long_loss = 0
+var short_win = 0
+var short_loss = 0
+recent_trade_size = 0.0
+is_loss = ta.change(strategy.losstrades) > 0 ? true : false
+if is_loss
+    recent_trade_size := strategy.closedtrades.size(strategy.closedtrades-1)
+    if recent_trade_size > 0
+        long_loss := long_loss + 1
+    else
+        short_loss := short_loss + 1
+
+plotshape(is_loss and recent_trade_size > 0,  title = "Long ST",  text = 'LST',  style = shape.labelup,   location = location.belowbar, color= color.rgb(255, 82, 82, 20), textcolor = color.white,  size = size.tiny)
+plotshape(is_loss and recent_trade_size < 0,  title = "Short ST",  text = 'SST',  style = shape.labeldown,   location = location.abovebar, color= color.rgb(255, 82, 82, 20), textcolor = color.white,  size = size.tiny)
