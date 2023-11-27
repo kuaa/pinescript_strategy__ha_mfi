@@ -55,6 +55,7 @@ bool mfi_close_cond = enable_close_long_mfi_cond ? mfi <= close_long_mfi_val : t
 
 // ==========================================================================
 // Autonomous Recursive Moving Average
+bool enable_arma = input.bool(true, 'enable arma', group='Autonomous Recursive Moving Average')
 ara_length = input.int(13, title='Length ', group='Autonomous Recursive Moving Average', inline='ara2')
 gamma = input.float(3.0, title='Gamma ', step=0.1, group='Autonomous Recursive Moving Average', inline='ara2')
 
@@ -66,7 +67,7 @@ ma := nz(mad[1], src_)
 d = ta.cum(math.abs(src_[ara_length] - ma)) / bar_index * gamma
 mad := ta.sma(ta.sma(src_ > nz(mad[1], src_) + d ? src_ + d : src_ < nz(mad[1], src_) - d ? src_ - d : nz(mad[1], src_), ara_length), ara_length)
 
-arma_long_condt = close > mad
+arma_long_condt = enable_arma ? close > mad : true
 plot(mad, title='ARA', color=color.new(color.orange, 20), style=plot.style_line, linewidth=2)
 
 
@@ -91,7 +92,8 @@ if (in_trade and long_cond)
 // 종가 - (현재 바의 시가 + 고가 + 저가 + 종가)/4.
 // 가장 최근에 진입한 거래의 진입가
 float recent_entry_price = strategy.opentrades.entry_price(strategy.opentrades-1)
-bool profit_cond = close > recent_entry_price   // 수익 중인지?
+bool enable_profit_cond = input.bool(true, 'enable profit cond', tooltip='수익 중일 때만 종료할 것인가?')
+bool profit_cond = enable_profit_cond ? close > recent_entry_price : true   // 수익 중인지?
 bool close_long_cond = ha_close_long_cond and profit_cond and mfi_close_cond and strategy.opentrades.size(strategy.opentrades - 1) > 0
 if (in_trade and close_long_cond)
     strategy.close(id = 'Long', comment = 'Close Long', immediately = true, alert_message = POA.close_message(password))
