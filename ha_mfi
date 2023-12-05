@@ -20,11 +20,18 @@ password = input.string(defval="password", title="Password ", group="entry con
 exchange_decimal = input.int(2, "Exchange Min Amount Decimal ", minval=0, step=1, group='entry cond')
 profit_balance = input.bool(true, "Trade with net profits included in equity", group='entry cond')
 sumcapital = profit_balance ? strategy.initial_capital + strategy.netprofit : strategy.initial_capital
-long_entry_size = math.round(sumcapital / close, exchange_decimal)
+entry_size = math.round(sumcapital / close, exchange_decimal)
 
 start_time = input.time(timestamp("2000-01-01T17:00:00+09:00"), title="자동매매 시작")
 end_time = input.time(timestamp("2030-12-31T09:00:00+09:00"), title="자동매매 종료")
 in_trade = POA.in_trade(start_time, end_time)
+
+active_long = input.bool(true, 'active long', inline='active long', group='entry cond')
+active_short = input.bool(true, 'active short', inline='active short', group='entry cond')
+
+
+float cut_ratio_long = input.float(6, title='cut long %', step=0.1, group='entry cond')
+float cut_ratio_short = input.float(6, title='cut short %', step=0.1, group='entry cond')
 
 // ==========================================================================
 // HEIKIN_ASHI
@@ -40,24 +47,16 @@ bool ha_open_long_cond = (ha_open == ha_low) and (ha_close > ha_open) and ((ha_c
 bool ha_close_long_cond = ha_open > ha_close and ((ha_open + ha_close) / 2) > close
 
 
-// ==========================================================================
-// MFI
-mfi_len = input.int(14, minval=1, title="MFI", group='mfi')
-mfi = ta.mfi(hlc3, mfi_len)
-//plot(mfi, color=color.yellow)
-
-int mif_open_long_val = input.int(70, title='mfi open long value', step=1, group='mfi', tooltip='mfi가 이 값 이상일 경우에만 진입합니다')
-bool mfi_long_cond = mfi >= mif_open_long_val
-
-bool enable_close_long_mfi_cond = input.bool(true, 'enable mfi long close cond', group='mfi', inline='mfi close cond')
-int close_long_mfi_val = input.int(50, 'mfi close long value', step=1, group='mfi', inline='mfi close cond', tooltip='mfi가 이 값 이하일 경우에만 종료합니다.') 
-bool mfi_close_cond = enable_close_long_mfi_cond ? mfi <= close_long_mfi_val : true
+bool ha_open_short_cond = (ha_open == ha_high) and (ha_close < ha_open) and ((ha_close + ha_open) / 2 > close)
+bool ha_close_short_cond = ha_open < ha_close and ((ha_open + ha_close) / 2) < close
 
 // ==========================================================================
 // Autonomous Recursive Moving Average
-bool enable_arma = input.bool(true, 'enable arma', group='Autonomous Recursive Moving Average')
-ara_length = input.int(13, title='Length ', group='Autonomous Recursive Moving Average', inline='ara2')
-gamma = input.float(3.0, title='Gamma ', step=0.1, group='Autonomous Recursive Moving Average', inline='ara2')
+bool use_arma_long = input.bool(true, title='use long', group='Autonomous Recursive Moving Average')
+bool use_arma_short = input.bool(true, title='use short', group='Autonomous Recursive Moving Average')
+
+ara_length = input.int(15, title='Length ', group='Autonomous Recursive Moving Average', inline='ara2')
+gamma = input.float(2.0, title='Gamma ', step=0.1, group='Autonomous Recursive Moving Average', inline='ara2')
 
 ma = 0.
 mad = 0.
@@ -67,21 +66,48 @@ ma := nz(mad[1], src_)
 d = ta.cum(math.abs(src_[ara_length] - ma)) / bar_index * gamma
 mad := ta.sma(ta.sma(src_ > nz(mad[1], src_) + d ? src_ + d : src_ < nz(mad[1], src_) - d ? src_ - d : nz(mad[1], src_), ara_length), ara_length)
 
-arma_long_condt = enable_arma ? close > mad : true
+arma_long_condt = use_arma_long ? close > mad : true
+arma_short_condt = use_arma_short ? close < mad : true
 plot(mad, title='ARA', color=color.new(color.orange, 20), style=plot.style_line, linewidth=2)
+
+
+// ==========================================================================
+// MFI
+mfi_len = input.int(14, minval=1, title="MFI", group='mfi')
+mfi = ta.mfi(hlc3, mfi_len)
+//plot(mfi, color=color.yellow)
+
+bool use_mfi_long = input.bool(true, 'use long', group='mfi')
+
+int mfi_open_long_min = input.int(50, title='open long min', step=1, group='mfi', tooltip='')
+int mfi_open_long_max = input.int(70, title='open long max', step=1, group='mfi', tooltip='')
+bool mfi_long_cond = use_mfi_long ? mfi >= mfi_open_long_min and mfi <= mfi_open_long_max : true
+
+int mfi_close_long_val = input.int(50, 'close long max', step=1, group='mfi', tooltip='mfi가 이 값 이하일 경우에만 롱 종료합니다.') 
+bool mfi_close_long_cond = use_mfi_long ? mfi <= mfi_close_long_val : true
+
+
+bool use_mfi_short = input.bool(true, 'use short', group='mfi')
+int mfi_open_short_min = input.int(50, title='open short min', step=1, group='mfi', tooltip='mfi가 이 값 이상일 경우에만 숏 진입합니다')
+int mfi_open_short_max = input.int(70, title='open short max', step=1, group='mfi', tooltip='mfi가 이 값 이하일 경우에만 숏 진입합니다')
+bool mfi_short_cond = use_mfi_short ? mfi >= mfi_open_short_min and mfi <= mfi_open_short_max  : true
+
+
+int mfi_close_short_val = input.int(50, 'close short min', step=1, group='mfi', tooltip='mfi가 이 값 이상일 경우에만 숏 종료합니다.') 
+bool mfi_close_short_cond = use_mfi_short ? mfi >= mfi_close_short_val : true
+
+
 
 
 
 
 // ==========================================================================
 // ENTRY LOGIC - LONG
-// 손절 비율
-float cut_ratio = input.float(6, title='cut %', step=0.1)
-bool long_cond = ha_open_long_cond and mfi_long_cond and arma_long_condt and strategy.opentrades.size(strategy.opentrades - 1) == 0
+bool long_cond = active_long and ha_open_long_cond and mfi_long_cond and arma_long_condt and strategy.opentrades.size(strategy.opentrades - 1) == 0
 if (in_trade and long_cond)
     //log.info('open:{0}, close:{1}, ha_open:{2}, ha_close:{3}', open, close, ha_open, ha_close)    
-    cut_price = close * (1 - cut_ratio/100)
-    strategy.entry(id = "Long", direction = strategy.long, qty = long_entry_size, alert_message = POA.entry_message(password))
+    cut_price = close * (1 - cut_ratio_long/100)
+    strategy.entry(id = "Long", direction = strategy.long, qty = entry_size, alert_message = POA.entry_message(password))
     strategy.exit(id = 'Stop Loss', from_entry = 'Long', stop = cut_price, comment_loss = 'Long SL', alert_message = POA.exit_message(password))
 
 
@@ -92,14 +118,33 @@ if (in_trade and long_cond)
 // 종가 - (현재 바의 시가 + 고가 + 저가 + 종가)/4.
 // 가장 최근에 진입한 거래의 진입가
 float recent_entry_price = strategy.opentrades.entry_price(strategy.opentrades-1)
-bool enable_profit_cond = input.bool(true, 'enable profit cond', tooltip='수익 중일 때만 종료할 것인가?')
-bool profit_cond = enable_profit_cond ? close > recent_entry_price : true   // 수익 중인지?
-bool close_long_cond = ha_close_long_cond and profit_cond and mfi_close_cond and strategy.opentrades.size(strategy.opentrades - 1) > 0
+bool profit_cond = close > recent_entry_price   // 수익 중인지?
+bool close_long_cond = ha_close_long_cond and profit_cond and mfi_close_long_cond and strategy.opentrades.size(strategy.opentrades - 1) > 0
 if (in_trade and close_long_cond)
     strategy.close(id = 'Long', comment = 'Close Long', immediately = true, alert_message = POA.close_message(password))
 
 
 
+// ==========================================================================
+// ENTRY LOGIC - SHORT
+bool short_cond = active_short and ha_open_short_cond and mfi_short_cond and arma_short_condt and strategy.opentrades.size(strategy.opentrades - 1) == 0
+if (in_trade and short_cond)
+    //log.info('open:{0}, close:{1}, ha_open:{2}, ha_close:{3}', open, close, ha_open, ha_close)    
+    cut_price = close * (1 + cut_ratio_short/100)
+    strategy.entry(id = "Short", direction = strategy.short, qty = entry_size, alert_message = POA.entry_message(password))
+    strategy.exit(id = 'Stop Loss', from_entry = 'Short', stop = cut_price, comment_loss = 'Short SL', alert_message = POA.exit_message(password))
+
+
+
+// ==========================================================================
+// CLOSE LOGIC - SHORT
+// 시가 - (이전 바 시가 + 이전 바 종가)/2.
+// 종가 - (현재 바의 시가 + 고가 + 저가 + 종가)/4.
+// 가장 최근에 진입한 거래의 진입가
+profit_cond := close < recent_entry_price   // 수익 중인지?
+bool close_short_cond = ha_close_short_cond and profit_cond and mfi_close_short_cond and strategy.opentrades.size(strategy.opentrades - 1) < 0
+if (in_trade and close_short_cond)
+    strategy.close(id = 'Short', comment = 'Close Short', immediately = true, alert_message = POA.close_message(password))
 
 
 
